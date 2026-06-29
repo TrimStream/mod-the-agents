@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './styles.css'
-import { Phase, InjectionType, DEFAULT_AGENT_META, AGENT_COLORS, AgentMeta, RoundData, PositionShift } from './types'
+import { Phase, InjectionType, DEFAULT_AGENT_META, AGENT_COLORS, AgentMeta, PositionShift } from './types'
 import { InputPanel } from './components/InputPanel'
 import { AgentPanel } from './components/AgentPanel'
 import { InjectionBar } from './components/InjectionBar'
@@ -45,13 +45,13 @@ export default function App() {
   const [roundTexts, setRoundTexts] = useState<string[][]>([])
   const roundBuffers = useRef<Map<number, string[]>>(new Map())
 
-  // Streaming: which agents are currently streaming
+  // Which agents are currently streaming
   const [streamingAgents, setStreamingAgents] = useState<boolean[]>(Array(AGENT_COUNT).fill(false))
 
   // Position shifts: key = `${roundNumber}-${agentIndex}`
   const [positionShifts, setPositionShifts] = useState<Record<string, PositionShift>>({})
 
-  // Injections per round (stored for display in agent panels)
+  // Injections per round (stored for display as banners)
   const [roundInjections, setRoundInjections] = useState<{ text: string; type: string; targetAgent?: number }[]>([])
 
   // Synthesis
@@ -191,7 +191,6 @@ export default function App() {
 
       const { debateId: id, agentDefs } = await res.json()
 
-      // Update agent meta if custom agents were returned
       if (agentDefs) {
         setAgentMeta(agentDefs.map((a: { index: number; name: string; label: string; description: string }, i: number) => ({
           index: a.index,
@@ -216,8 +215,7 @@ export default function App() {
     if (!debateId) return
     setError(null)
 
-    const injData = { text: injection, type: injectionType, targetAgent: targetAgent ?? undefined }
-    setRoundInjections((prev) => [...prev, injData])
+    setRoundInjections((prev) => [...prev, { text: injection, type: injectionType, targetAgent: targetAgent ?? undefined }])
     setStreamingAgents(Array(AGENT_COUNT).fill(true))
     setCurrentRound((prev) => prev + 1)
     setPhase('debating')
@@ -270,25 +268,6 @@ export default function App() {
     setError(null)
   }
 
-  // Build round data per agent for display
-  const getAgentRounds = (agentIndex: number): RoundData[] => {
-    return roundTexts.map((roundAgentTexts, roundIdx) => {
-      const roundNum = roundIdx + 1
-      const isCurrentRound = roundNum === currentRound
-      const isStreaming = isCurrentRound && streamingAgents[agentIndex]
-      const injectionForRound = roundInjections[roundIdx - 1] // injection that triggered this round
-      const shiftKey = `${roundNum}-${agentIndex}`
-
-      return {
-        roundNumber: roundNum,
-        text: roundAgentTexts[agentIndex] ?? '',
-        isStreaming,
-        injection: injectionForRound,
-        positionShift: roundNum > 1 ? positionShifts[shiftKey] : undefined,
-      }
-    })
-  }
-
   const isDebating = phase === 'debating' || phase === 'synthesizing'
   const showDebateArea = phase !== 'idle'
   const showInjection = phase === 'awaiting_injection'
@@ -303,7 +282,9 @@ export default function App() {
           </span>
             {phase !== 'idle' && (
                 <span className={`phase-pill ${isDebating ? 'active' : ''}`}>
-              {phase === 'debating' ? `Round ${currentRound} — ${PHASE_LABELS[phase]}` : PHASE_LABELS[phase]}
+              {phase === 'debating'
+                  ? `Round ${currentRound} — ${PHASE_LABELS[phase]}`
+                  : PHASE_LABELS[phase]}
             </span>
             )}
           </div>
@@ -352,15 +333,47 @@ export default function App() {
                 {inputImage && <span className="topic-image-badge">+ image</span>}
               </div>
 
-              <div className="debate-grid">
-                {agentMeta.map((agent) => (
-                    <AgentPanel
-                        key={agent.index}
-                        agent={agent}
-                        rounds={getAgentRounds(agent.index)}
-                    />
-                ))}
-              </div>
+              {Array.from(
+                  { length: Math.max(currentRound, roundTexts.length) },
+                  (_, roundIdx) => {
+                    const roundNum = roundIdx + 1
+                    const roundAgentTexts = roundTexts[roundIdx] ?? Array(AGENT_COUNT).fill('')
+                    const injectionForRound = roundInjections[roundIdx - 1]
+                    const isCurrentRound = roundNum === currentRound && phase === 'debating'
+
+                    return (
+                        <div key={roundIdx} className="debate-round-section">
+                          {injectionForRound && (
+                              <div className="injection-banner-full">
+                                <span className="injection-banner-type">{injectionForRound.type}</span>
+                                <span className="injection-banner-text">{injectionForRound.text}</span>
+                                {injectionForRound.targetAgent !== undefined && (
+                                    <span className="injection-banner-target">
+                          → {agentMeta[injectionForRound.targetAgent]?.name}
+                        </span>
+                                )}
+                              </div>
+                          )}
+
+                          {roundNum > 1 && (
+                              <div className="round-row-header">Round {roundNum}</div>
+                          )}
+
+                          <div className="debate-grid">
+                            {agentMeta.map((agent) => (
+                                <AgentPanel
+                                    key={agent.index}
+                                    agent={agent}
+                                    text={roundAgentTexts[agent.index] ?? ''}
+                                    isStreaming={isCurrentRound && streamingAgents[agent.index]}
+                                    positionShift={roundNum > 1 ? positionShifts[`${roundNum}-${agent.index}`] : undefined}
+                                />
+                            ))}
+                          </div>
+                        </div>
+                    )
+                  }
+              )}
 
               {showInjection && (
                   <InjectionBar

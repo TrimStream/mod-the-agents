@@ -362,11 +362,12 @@ body {
 /* Colored header strip */
 .agent-panel-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   padding: 10px 16px;
-  background: var(--agent-bg, var(--surface-raised));
+  background: var(--agent-bg);
   border-bottom: 1px solid var(--border);
+  gap: 8px;
 }
 
 .agent-name {
@@ -907,3 +908,72 @@ body {
 
 .custom-agent-name::placeholder,
 .custom-agent-desc::placeholder { color: var(--dim); }
+
+/* Round row layout */
+.debate-round-section {
+  border-top: 1px solid var(--border);
+}
+
+.debate-round-section:first-child {
+  border-top: none;
+}
+
+.round-row-header {
+  padding: 6px 20px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  background: var(--page);
+  font-family: var(--sans), sans-serif;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Full-width injection banner between rounds */
+.injection-banner-full {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 20px;
+  background: var(--surface-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.injection-banner-type {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+  font-family: var(--sans), sans-serif;
+  background: var(--border);
+  padding: 2px 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.injection-banner-text {
+  font-size: 12px;
+  color: var(--sub);
+  font-family: var(--mono), monospace;
+  font-style: italic;
+  line-height: 1.5;
+}
+
+.injection-banner-target {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: var(--mono), monospace;
+  flex-shrink: 0;
+}
+
+/* Agent header right side */
+.agent-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
