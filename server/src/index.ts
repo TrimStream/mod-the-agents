@@ -112,7 +112,6 @@ async function runRound(sessionId: string, roundIndex: number) {
         model: MODEL,
         messages,
         stream: true,
-        max_tokens: 400,
       })
 
       for await (const chunk of stream) {
@@ -169,7 +168,6 @@ async function generateSuggestions(sessionId: string) {
     const response = await cerebras.chat.completions.create({
       model: MODEL,
       messages: [{ role: 'user', content: buildSuggestionsPrompt(context) }],
-      max_tokens: 200,
     })
 
     const raw = response.choices[0]?.message?.content ?? '[]'
@@ -215,7 +213,6 @@ async function runSynthesis(sessionId: string) {
         { role: 'user', content: context },
       ],
       stream: true,
-      max_tokens: 600,
     })
 
     for await (const chunk of stream) {
