@@ -27,7 +27,7 @@ cd ../client && npm install
 ### 2. Configure environment
 
 ```bash
-cp .env.example server/.env
+cp server/.env.example server/.env
 # Edit server/.env and add your CEREBRAS_API_KEY
 ```
 
