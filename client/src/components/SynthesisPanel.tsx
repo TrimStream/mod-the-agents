@@ -1,9 +1,11 @@
+import { parseInline } from '../utils/markdown'
+
+const SECTION_HEADERS = ['CONSENSUS', 'UNRESOLVED', 'INJECTION IMPACT', 'VERDICT']
+
 interface Section {
   title: string
   body: string
 }
-
-const SECTION_HEADERS = ['CONSENSUS', 'UNRESOLVED', 'INJECTION IMPACT', 'VERDICT']
 
 function parseSections(text: string): Section[] | null {
   const sections: Section[] = []
@@ -40,7 +42,13 @@ export function SynthesisPanel({ text, isStreaming }: SynthesisPanelProps) {
               {sections.map((section) => (
                   <div key={section.title} className="synthesis-section">
                     <p className="synthesis-section-title">{section.title}</p>
-                    <p className="synthesis-section-text">{section.body}</p>
+                    <div className="synthesis-section-text">
+                      {section.body.split('\n').map((line, i) => (
+                          <p key={i} style={{ marginBottom: line.trim() ? '6px' : '0' }}>
+                            {parseInline(line)}
+                          </p>
+                      ))}
+                    </div>
                   </div>
               ))}
             </div>
