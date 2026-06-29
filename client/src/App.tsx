@@ -19,40 +19,49 @@ const PHASE_LABELS: Record<Phase, string> = {
 }
 
 export default function App() {
-  // ─── Debate identity ──────────────────────────────────────────────────────
+  // Theme
+  const [darkMode, setDarkMode] = useState(() =>
+      window.matchMedia('(prefers-color-scheme: dark)').matches
+  )
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light')
+  }, [darkMode])
+
+  // Debate identity
   const [debateId, setDebateId] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
 
-  // ─── Input ────────────────────────────────────────────────────────────────
+  // Input
   const [inputText, setInputText] = useState('')
   const [inputImage, setInputImage] = useState<string | null>(null)
   const [imageFilename, setImageFilename] = useState<string | null>(null)
 
-  // ─── Agent text (buffered for high-TPS streaming) ─────────────────────────
+  // Agent text (buffered for high-TPS streaming)
   const [round1Texts, setRound1Texts] = useState<string[]>(Array(AGENT_COUNT).fill(''))
   const [round2Texts, setRound2Texts] = useState<string[]>(Array(AGENT_COUNT).fill(''))
   const round1Buffer = useRef<string[]>(Array(AGENT_COUNT).fill(''))
   const round2Buffer = useRef<string[]>(Array(AGENT_COUNT).fill(''))
 
-  // ─── Streaming state per agent ────────────────────────────────────────────
+  // Streaming state per agent
   const [streamingR1, setStreamingR1] = useState<boolean[]>(Array(AGENT_COUNT).fill(false))
   const [streamingR2, setStreamingR2] = useState<boolean[]>(Array(AGENT_COUNT).fill(false))
 
-  // ─── Synthesis ────────────────────────────────────────────────────────────
+  // Synthesis
   const [synthesis, setSynthesis] = useState('')
   const synthBuffer = useRef('')
 
-  // ─── Injection ────────────────────────────────────────────────────────────
+  // Injection
   const [injection, setInjection] = useState('')
   const [injectionType, setInjectionType] = useState<InjectionType>('constraint')
   const [targetAgent, setTargetAgent] = useState<number | null>(null)
   const [suggestions, setSuggestions] = useState<string[]>([])
 
-  // ─── SSE ──────────────────────────────────────────────────────────────────
+  // SSE ref
   const esRef = useRef<EventSource | null>(null)
 
-  // ─── Token flush — batch buffer into state every 30ms ─────────────────────
+  // Flush token buffers into state every 30ms to avoid excessive re-renders at Cerebras TPS
   useEffect(() => {
     const id = setInterval(() => {
       const r1 = round1Buffer.current
@@ -76,7 +85,7 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
 
-  // ─── SSE event handler ────────────────────────────────────────────────────
+  // SSE event handler
   const handleEvent = useCallback((raw: string) => {
     let data: Record<string, unknown>
     try {
@@ -105,11 +114,8 @@ export default function App() {
 
       case 'round_complete': {
         const round = data.roundNumber as number
-        if (round === 1) {
-          setStreamingR1(Array(AGENT_COUNT).fill(false))
-        } else {
-          setStreamingR2(Array(AGENT_COUNT).fill(false))
-        }
+        if (round === 1) setStreamingR1(Array(AGENT_COUNT).fill(false))
+        else setStreamingR2(Array(AGENT_COUNT).fill(false))
         break
       }
 
@@ -137,23 +143,21 @@ export default function App() {
   }, [])
 
   const connectSSE = useCallback(
-    (id: string) => {
-      if (esRef.current) esRef.current.close()
-
-      const es = new EventSource(`${API}/api/debate/${id}/stream`)
-      es.onmessage = (e) => handleEvent(e.data)
-      es.onerror = () => {
-        // Connection will retry automatically; only surface if debate not complete
-        if (phase !== 'complete') console.warn('SSE connection interrupted')
-      }
-      esRef.current = es
-    },
-    [handleEvent, phase]
+      (id: string) => {
+        if (esRef.current) esRef.current.close()
+        const es = new EventSource(`${API}/api/debate/${id}/stream`)
+        es.onmessage = (e) => handleEvent(e.data)
+        es.onerror = () => {
+          if (phase !== 'complete') console.warn('SSE connection interrupted')
+        }
+        esRef.current = es
+      },
+      [handleEvent, phase]
   )
 
   useEffect(() => () => esRef.current?.close(), [])
 
-  // ─── Start debate ─────────────────────────────────────────────────────────
+  // Start debate
   const startDebate = async () => {
     setError(null)
     setRound1Texts(Array(AGENT_COUNT).fill(''))
@@ -184,7 +188,7 @@ export default function App() {
     }
   }
 
-  // ─── Inject ───────────────────────────────────────────────────────────────
+  // Submit injection
   const submitInjection = async () => {
     if (!debateId) return
     setError(null)
@@ -202,13 +206,12 @@ export default function App() {
         }),
       })
       if (!res.ok) throw new Error(await res.text())
-      // SSE handles the rest
     } catch (err: any) {
       setError(err.message)
     }
   }
 
-  // ─── Reset ────────────────────────────────────────────────────────────────
+  // Reset to idle
   const reset = () => {
     esRef.current?.close()
     setDebateId(null)
@@ -225,7 +228,6 @@ export default function App() {
     setError(null)
   }
 
-  // ─── Derived ──────────────────────────────────────────────────────────────
   const isDebating = phase === 'round1' || phase === 'round2' || phase === 'synthesizing'
   const showDebateArea = phase !== 'idle'
   const showInjection = phase === 'awaiting_injection'
@@ -233,110 +235,107 @@ export default function App() {
   const hasRound2 = phase === 'round2' || phase === 'synthesizing' || phase === 'complete'
 
   return (
-    <div className="app">
-      {/* Header */}
-      <header className="header">
-        <span className="header-logo">
-          Mod the Agents <span>by TrimStream</span>
-        </span>
-        <div className="header-meta">
-          {phase !== 'idle' && (
-            <span className={`phase-badge ${isDebating ? 'active' : ''}`}>
+      <div className="app">
+        <header className="header">
+          <div className="header-left">
+          <span className="header-logo">
+            Mod the Agents <span>by TrimStream</span>
+          </span>
+            {phase !== 'idle' && (
+                <span className={`phase-pill ${isDebating ? 'active' : ''}`}>
               {PHASE_LABELS[phase]}
             </span>
-          )}
-          {phase !== 'idle' && (
-            <button className="new-debate-btn" onClick={reset}>
-              New debate
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* Error */}
-      {error && <div className="error-bar">{error}</div>}
-
-      {/* Input — only visible before debate starts */}
-      {phase === 'idle' && (
-        <InputPanel
-          value={inputText}
-          onChange={setInputText}
-          imageFilename={imageFilename}
-          onImageChange={(b64, name) => {
-            setInputImage(b64)
-            setImageFilename(name)
-          }}
-          onImageClear={() => {
-            setInputImage(null)
-            setImageFilename(null)
-          }}
-          onSubmit={startDebate}
-          disabled={isDebating}
-        />
-      )}
-
-      {/* Debate area */}
-      {showDebateArea && (
-        <div className="debate-area">
-          {/* Topic recap */}
-          <div style={{
-            padding: '10px 24px',
-            borderBottom: '1px solid var(--border)',
-            background: 'var(--surface)',
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 12,
-          }}>
-            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--dim)', flexShrink: 0, paddingTop: 2 }}>
-              Topic
-            </span>
-            <span style={{ fontSize: 13, color: 'var(--sub)', lineHeight: 1.5 }}>
-              {inputText}
-              {inputImage && (
-                <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--dim)' }}>+ image</span>
+            )}
+          </div>
+          <div className="header-right">
+            <button
+                className="theme-toggle"
+                onClick={() => setDarkMode((d) => !d)}
+                title={darkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {darkMode ? (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <circle cx="8" cy="8" r="3.5" />
+                    <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M3.05 3.05l1.06 1.06M11.89 11.89l1.06 1.06M3.05 12.95l1.06-1.06M11.89 4.11l1.06-1.06" stroke="currentColor" strokeWidth="1.2" fill="none" strokeLinecap="round"/>
+                  </svg>
+              ) : (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 3a5 5 0 1 0 5 5 3.5 3.5 0 0 1-5-5z" />
+                  </svg>
               )}
-            </span>
+            </button>
+            {phase !== 'idle' && (
+                <button className="new-debate-btn" onClick={reset}>
+                  New debate
+                </button>
+            )}
           </div>
+        </header>
 
-          {/* Agent panels */}
-          <div className="debate-grid">
-            {AGENT_META.map((agent) => (
-              <AgentPanel
-                key={agent.index}
-                agent={agent}
-                round1Text={round1Texts[agent.index]}
-                round2Text={round2Texts[agent.index]}
-                isStreamingRound1={streamingR1[agent.index]}
-                isStreamingRound2={streamingR2[agent.index]}
-                hasRound2={hasRound2}
-              />
-            ))}
-          </div>
+        {error && <div className="error-bar">{error}</div>}
 
-          {/* Injection bar */}
-          {showInjection && (
-            <InjectionBar
-              injection={injection}
-              onInjectionChange={setInjection}
-              injectionType={injectionType}
-              onTypeChange={setInjectionType}
-              targetAgent={targetAgent}
-              onTargetAgentChange={setTargetAgent}
-              suggestions={suggestions}
-              onSubmit={submitInjection}
-              disabled={isDebating}
+        {phase === 'idle' && (
+            <InputPanel
+                value={inputText}
+                onChange={setInputText}
+                imageFilename={imageFilename}
+                onImageChange={(b64, name) => {
+                  setInputImage(b64)
+                  setImageFilename(name)
+                }}
+                onImageClear={() => {
+                  setInputImage(null)
+                  setImageFilename(null)
+                }}
+                onSubmit={startDebate}
+                disabled={isDebating}
             />
-          )}
+        )}
 
-          {/* Synthesis */}
-          {showSynthesis && (
-            <SynthesisPanel
-              text={synthesis}
-              isStreaming={phase === 'synthesizing'}
-            />
-          )}
-        </div>
-      )}
-    </div>
+        {showDebateArea && (
+            <div className="debate-area">
+              <div className="topic-bar">
+                <span className="topic-label">Topic</span>
+                <span className="topic-text">{inputText}</span>
+                {inputImage && <span className="topic-image-badge">+ image</span>}
+              </div>
+
+              <div className="debate-grid">
+                {AGENT_META.map((agent) => (
+                    <AgentPanel
+                        key={agent.index}
+                        agent={agent}
+                        round1Text={round1Texts[agent.index]}
+                        round2Text={round2Texts[agent.index]}
+                        isStreamingRound1={streamingR1[agent.index]}
+                        isStreamingRound2={streamingR2[agent.index]}
+                        hasRound2={hasRound2}
+                    />
+                ))}
+              </div>
+
+              {showInjection && (
+                  <InjectionBar
+                      injection={injection}
+                      onInjectionChange={setInjection}
+                      injectionType={injectionType}
+                      onTypeChange={setInjectionType}
+                      targetAgent={targetAgent}
+                      onTargetAgentChange={setTargetAgent}
+                      suggestions={suggestions}
+                      onSubmit={submitInjection}
+                      disabled={isDebating}
+                  />
+              )}
+
+              {showSynthesis && (
+                  <SynthesisPanel
+                      text={synthesis}
+                      isStreaming={phase === 'synthesizing'}
+                  />
+              )}
+            </div>
+        )}
+      </div>
   )
 }

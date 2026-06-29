@@ -5,8 +5,7 @@ import { v4 as uuidv4 } from 'uuid'
 import OpenAI from 'openai'
 import { AGENTS, SYNTHESIS_SYSTEM_PROMPT, buildSuggestionsPrompt } from './agents.js'
 
-// ─── Cerebras client (OpenAI-compatible) ─────────────────────────────────────
-
+// Cerebras client (OpenAI-compatible)
 const cerebras = new OpenAI({
   apiKey: process.env.CEREBRAS_API_KEY!,
   baseURL: 'https://api.cerebras.ai/v1',
@@ -14,8 +13,7 @@ const cerebras = new OpenAI({
 
 const MODEL = 'gemma-4-31b'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
+// Types
 interface Round {
   number: number
   injection?: string
@@ -35,8 +33,7 @@ interface DebateSession {
 
 const sessions = new Map<string, DebateSession>()
 
-// ─── SSE helpers ─────────────────────────────────────────────────────────────
-
+// SSE helpers
 function broadcast(sessionId: string, data: Record<string, unknown>) {
   const session = sessions.get(sessionId)
   if (!session) return
@@ -50,8 +47,7 @@ function broadcast(sessionId: string, data: Record<string, unknown>) {
   })
 }
 
-// ─── Message builders ─────────────────────────────────────────────────────────
-
+// Message builders
 type MessageContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>
 
 function buildContent(text: string, image?: string): MessageContent {
@@ -62,8 +58,7 @@ function buildContent(text: string, image?: string): MessageContent {
   ]
 }
 
-// ─── Core debate logic ────────────────────────────────────────────────────────
-
+// Core debate logic
 async function runRound(sessionId: string, roundIndex: number) {
   const session = sessions.get(sessionId)
   if (!session) return
@@ -86,22 +81,22 @@ async function runRound(sessionId: string, roundIndex: number) {
         // Round 2: agent sees round 1 responses + injection
         const round1 = session.rounds[0]
         const round1Context = AGENTS.map(
-          (a) => `${a.label}:\n${round1.responses[a.index] ?? '(no response)'}`
+            (a) => `${a.label}:\n${round1.responses[a.index] ?? '(no response)'}`
         ).join('\n\n')
 
         const injectionNote = round.injection
-          ? `\n\nHuman injection [${(round.injectionType ?? 'constraint').toUpperCase()}]${
-              round.targetAgent !== undefined
-                ? ` targeting ${AGENTS[round.targetAgent]?.name}`
-                : ''
+            ? `\n\nHuman injection [${(round.injectionType ?? 'constraint').toUpperCase()}]${
+                round.targetAgent !== undefined
+                    ? ` targeting ${AGENTS[round.targetAgent]?.name}`
+                    : ''
             }: "${round.injection}"`
-          : ''
+            : ''
 
         const userText =
-          `Original topic: ${session.input.text}\n\n` +
-          `Round 1 responses from all agents:\n${round1Context}` +
-          injectionNote +
-          `\n\nNow give your Round 2 response as the ${agent.name}.`
+            `Original topic: ${session.input.text}\n\n` +
+            `Round 1 responses from all agents:\n${round1Context}` +
+            injectionNote +
+            `\n\nNow give your Round 2 response as the ${agent.name}.`
 
         messages.push({
           role: 'system',
@@ -109,7 +104,6 @@ async function runRound(sessionId: string, roundIndex: number) {
         })
         messages.push({
           role: 'user',
-          // Use injection image if provided, otherwise original
           content: buildContent(userText, session.input.image) as any,
         })
       }
@@ -153,12 +147,10 @@ async function runRound(sessionId: string, roundIndex: number) {
 
   broadcast(sessionId, { type: 'round_complete', roundNumber: round.number })
 
-  // After Round 1: move to injection phase and generate suggestions
   if (!isRound2) {
     session.phase = 'awaiting_injection'
     generateSuggestions(sessionId)
   } else {
-    // After Round 2: ready for synthesis
     session.phase = 'synthesizing'
     runSynthesis(sessionId)
   }
@@ -170,7 +162,7 @@ async function generateSuggestions(sessionId: string) {
 
   const round1 = session.rounds[0]
   const context = AGENTS.map(
-    (a) => `${a.label}: ${round1.responses[a.index] ?? ''}`
+      (a) => `${a.label}: ${round1.responses[a.index] ?? ''}`
   ).join('\n\n')
 
   try {
@@ -185,7 +177,6 @@ async function generateSuggestions(sessionId: string) {
     const suggestions = JSON.parse(cleaned)
     broadcast(sessionId, { type: 'suggestions', suggestions })
   } catch {
-    // Fallback suggestions if Cerebras call fails
     broadcast(sessionId, {
       type: 'suggestions',
       suggestions: [
@@ -242,13 +233,11 @@ async function runSynthesis(sessionId: string) {
   }
 }
 
-// ─── Express app ──────────────────────────────────────────────────────────────
-
+// Express app
 const app = express()
 app.use(cors())
-app.use(express.json({ limit: '15mb' })) // allow base64 images
+app.use(express.json({ limit: '15mb' }))
 
-// SSE — connect to debate stream
 app.get('/api/debate/:id/stream', (req, res) => {
   const session = sessions.get(req.params.id)
   if (!session) {
@@ -266,7 +255,6 @@ app.get('/api/debate/:id/stream', (req, res) => {
   req.on('close', () => session.sseClients.delete(res))
 })
 
-// Start a new debate (Round 1)
 app.post('/api/debate/start', async (req, res) => {
   const { text, image } = req.body as { text: string; image?: string }
   if (!text?.trim()) {
@@ -286,12 +274,9 @@ app.post('/api/debate/start', async (req, res) => {
 
   sessions.set(id, session)
   res.json({ debateId: id })
-
-  // Fire round 1 asynchronously (SSE client connects independently)
   runRound(id, 0)
 })
 
-// Inject and trigger Round 2
 app.post('/api/debate/:id/inject', (req, res) => {
   const session = sessions.get(req.params.id)
   if (!session) {
@@ -325,7 +310,6 @@ app.post('/api/debate/:id/inject', (req, res) => {
   runRound(session.id, 1)
 })
 
-// Get current session state (for reconnect / debug)
 app.get('/api/debate/:id', (req, res) => {
   const session = sessions.get(req.params.id)
   if (!session) {

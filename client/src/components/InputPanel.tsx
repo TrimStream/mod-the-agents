@@ -11,14 +11,14 @@ interface InputPanelProps {
 }
 
 export function InputPanel({
-  value,
-  onChange,
-  imageFilename,
-  onImageChange,
-  onImageClear,
-  onSubmit,
-  disabled,
-}: InputPanelProps) {
+                             value,
+                             onChange,
+                             imageFilename,
+                             onImageChange,
+                             onImageClear,
+                             onSubmit,
+                             disabled,
+                           }: InputPanelProps) {
   const fileRef = useRef<HTMLInputElement>(null)
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -30,7 +30,6 @@ export function InputPanel({
       onImageChange(base64, file.name)
     }
     reader.readAsDataURL(file)
-    // Reset input so same file can be re-selected
     e.target.value = ''
   }
 
@@ -42,56 +41,47 @@ export function InputPanel({
   }
 
   return (
-    <section className="input-section">
-      <p className="input-label">Topic, claim, or scenario</p>
-      <textarea
-        className="input-textarea"
-        placeholder="Enter any text, question, or scenario. Four agents will debate it simultaneously."
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={handleKey}
-        disabled={disabled}
-        rows={4}
-      />
-      <div className="input-row">
-        <div className="image-upload-row">
-          <label className="image-upload-label">
+      <section className="input-section">
+        <p className="input-eyebrow">Cerebras × Gemma 4</p>
+        <h1 className="input-headline">Mod the Agents</h1>
+        <p className="input-subline">
+          Any claim or image is simultaneously contested by four agents with opposing epistemic
+          identities. You intervene mid-debate. They adapt.
+        </p>
+        <textarea
+            className="input-textarea"
+            placeholder="Enter any text, question, or scenario. Attach an image for multimodal debate."
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            onKeyDown={handleKey}
+            disabled={disabled}
+            rows={4}
+        />
+        <div className="input-row">
+          <div className="image-upload-row">
+            <label className="image-upload-label">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <rect x="1" y="3" width="14" height="10" rx="1.5" />
+                <circle cx="5.5" cy="7" r="1" />
+                <path d="M1 11l4-3 3 2.5 2.5-3 4.5 4" />
+              </svg>
+              Add image
+              <input ref={fileRef} type="file" accept="image/*" onChange={handleFile} disabled={disabled} />
+            </label>
+            {imageFilename && (
+                <>
+                  <span className="image-filename" title={imageFilename}>{imageFilename}</span>
+                  <button className="image-clear" onClick={onImageClear} type="button">×</button>
+                </>
+            )}
+          </div>
+          <button className="debate-btn" onClick={onSubmit} disabled={disabled || !value.trim()}>
+            Start debate
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <rect x="1" y="3" width="14" height="10" rx="1.5" />
-              <circle cx="5.5" cy="7" r="1" />
-              <path d="M1 11l4-3 3 2.5 2.5-3 4.5 4" />
+              <path d="M3 8h10M9 4l4 4-4 4" />
             </svg>
-            Add image
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              onChange={handleFile}
-              disabled={disabled}
-            />
-          </label>
-          {imageFilename && (
-            <>
-              <span className="image-filename" title={imageFilename}>
-                {imageFilename}
-              </span>
-              <button className="image-clear" onClick={onImageClear} type="button">
-                ×
-              </button>
-            </>
-          )}
+          </button>
         </div>
-        <button
-          className="debate-btn"
-          onClick={onSubmit}
-          disabled={disabled || !value.trim()}
-        >
-          Start debate
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M3 8h10M9 4l4 4-4 4" />
-          </svg>
-        </button>
-      </div>
-    </section>
+      </section>
   )
 }
