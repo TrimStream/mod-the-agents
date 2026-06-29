@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './styles.css'
-import { Phase, InjectionType, AGENT_META } from './types'
+import { Phase, InjectionType, DEFAULT_AGENT_META, AGENT_COLORS, AgentMeta, RoundData, PositionShift } from './types'
 import { InputPanel } from './components/InputPanel'
 import { AgentPanel } from './components/AgentPanel'
 import { InjectionBar } from './components/InjectionBar'
@@ -11,9 +11,8 @@ const AGENT_COUNT = 4
 
 const PHASE_LABELS: Record<Phase, string> = {
   idle: '',
-  round1: 'Round 1 — Debating',
-  awaiting_injection: 'Round 1 complete — Inject to continue',
-  round2: 'Round 2 — Debating',
+  debating: 'Debating',
+  awaiting_injection: 'Inject to continue',
   synthesizing: 'Synthesizing',
   complete: 'Complete',
 }
@@ -32,50 +31,69 @@ export default function App() {
   const [debateId, setDebateId] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [currentRound, setCurrentRound] = useState(1)
+
+  // Agent definitions (overridable by custom agents)
+  const [agentMeta, setAgentMeta] = useState<AgentMeta[]>(DEFAULT_AGENT_META)
 
   // Input
   const [inputText, setInputText] = useState('')
   const [inputImage, setInputImage] = useState<string | null>(null)
   const [imageFilename, setImageFilename] = useState<string | null>(null)
 
-  // Agent text (buffered for high-TPS streaming)
-  const [round1Texts, setRound1Texts] = useState<string[]>(Array(AGENT_COUNT).fill(''))
-  const [round2Texts, setRound2Texts] = useState<string[]>(Array(AGENT_COUNT).fill(''))
-  const round1Buffer = useRef<string[]>(Array(AGENT_COUNT).fill(''))
-  const round2Buffer = useRef<string[]>(Array(AGENT_COUNT).fill(''))
+  // Round texts: roundTexts[roundIndex][agentIndex]
+  const [roundTexts, setRoundTexts] = useState<string[][]>([])
+  const roundBuffers = useRef<Map<number, string[]>>(new Map())
 
-  // Streaming state per agent
-  const [streamingR1, setStreamingR1] = useState<boolean[]>(Array(AGENT_COUNT).fill(false))
-  const [streamingR2, setStreamingR2] = useState<boolean[]>(Array(AGENT_COUNT).fill(false))
+  // Streaming: which agents are currently streaming
+  const [streamingAgents, setStreamingAgents] = useState<boolean[]>(Array(AGENT_COUNT).fill(false))
+
+  // Position shifts: key = `${roundNumber}-${agentIndex}`
+  const [positionShifts, setPositionShifts] = useState<Record<string, PositionShift>>({})
+
+  // Injections per round (stored for display in agent panels)
+  const [roundInjections, setRoundInjections] = useState<{ text: string; type: string; targetAgent?: number }[]>([])
 
   // Synthesis
   const [synthesis, setSynthesis] = useState('')
   const synthBuffer = useRef('')
 
-  // Injection
+  // Injection state
   const [injection, setInjection] = useState('')
   const [injectionType, setInjectionType] = useState<InjectionType>('constraint')
   const [targetAgent, setTargetAgent] = useState<number | null>(null)
   const [suggestionsByType, setSuggestionsByType] = useState<Record<string, string[]>>({})
 
-  // SSE ref
+  // SSE
   const esRef = useRef<EventSource | null>(null)
 
-  // Flush token buffers into state every 30ms to avoid excessive re-renders at Cerebras TPS
+  // Flush token buffers into state every 30ms
   useEffect(() => {
     const id = setInterval(() => {
-      const r1 = round1Buffer.current
-      const r2 = round2Buffer.current
-      const s = synthBuffer.current
+      let hasUpdates = false
+      const updates: { roundNum: number; texts: string[] }[] = []
 
-      if (r1.some((b) => b)) {
-        setRound1Texts((prev) => prev.map((t, i) => t + r1[i]))
-        round1Buffer.current = Array(AGENT_COUNT).fill('')
+      roundBuffers.current.forEach((buf, roundNum) => {
+        if (buf.some((b) => b)) {
+          updates.push({ roundNum, texts: [...buf] })
+          roundBuffers.current.set(roundNum, Array(AGENT_COUNT).fill(''))
+          hasUpdates = true
+        }
+      })
+
+      if (hasUpdates) {
+        setRoundTexts((prev) => {
+          const next = [...prev]
+          for (const { roundNum, texts } of updates) {
+            const idx = roundNum - 1
+            while (next.length <= idx) next.push(Array(AGENT_COUNT).fill(''))
+            next[idx] = (next[idx] ?? Array(AGENT_COUNT).fill('')).map((t, i) => t + texts[i])
+          }
+          return next
+        })
       }
-      if (r2.some((b) => b)) {
-        setRound2Texts((prev) => prev.map((t, i) => t + r2[i]))
-        round2Buffer.current = Array(AGENT_COUNT).fill('')
-      }
+
+      const s = synthBuffer.current
       if (s) {
         setSynthesis((prev) => prev + s)
         synthBuffer.current = ''
@@ -85,43 +103,42 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
 
-  // SSE event handler
   const handleEvent = useCallback((raw: string) => {
     let data: Record<string, unknown>
-    try {
-      data = JSON.parse(raw)
-    } catch {
-      return
-    }
+    try { data = JSON.parse(raw) } catch { return }
 
     switch (data.type) {
       case 'agent_token': {
         const idx = data.agentIndex as number
-        const token = data.token as string
-        const round = data.roundNumber as number
-        if (round === 1) round1Buffer.current[idx] += token
-        else round2Buffer.current[idx] += token
+        const roundNum = data.roundNumber as number
+        const buf = roundBuffers.current.get(roundNum) ?? Array(AGENT_COUNT).fill('')
+        buf[idx] += data.token as string
+        roundBuffers.current.set(roundNum, buf)
         break
       }
 
       case 'agent_done': {
         const idx = data.agentIndex as number
-        const round = data.roundNumber as number
-        if (round === 1) setStreamingR1((prev) => prev.map((v, i) => (i === idx ? false : v)))
-        else setStreamingR2((prev) => prev.map((v, i) => (i === idx ? false : v)))
+        setStreamingAgents((prev) => prev.map((v, i) => (i === idx ? false : v)))
         break
       }
 
-      case 'round_complete': {
-        const round = data.roundNumber as number
-        if (round === 1) setStreamingR1(Array(AGENT_COUNT).fill(false))
-        else setStreamingR2(Array(AGENT_COUNT).fill(false))
+      case 'round_complete':
+        setStreamingAgents(Array(AGENT_COUNT).fill(false))
+        setPhase('awaiting_injection')
+        break
+
+      case 'position_analysis': {
+        const key = `${data.roundNumber}-${data.agentIndex}`
+        setPositionShifts((prev) => ({
+          ...prev,
+          [key]: { shifted: data.shifted as boolean, summary: data.summary as string },
+        }))
         break
       }
 
       case 'suggestions':
         setSuggestionsByType(data.suggestionsByType as Record<string, string[]>)
-        setPhase('awaiting_injection')
         break
 
       case 'synthesis_token':
@@ -142,68 +159,77 @@ export default function App() {
     }
   }, [])
 
-  const connectSSE = useCallback(
-      (id: string) => {
-        if (esRef.current) esRef.current.close()
-        const es = new EventSource(`${API}/api/debate/${id}/stream`)
-        es.onmessage = (e) => handleEvent(e.data)
-        es.onerror = () => {
-          if (phase !== 'complete') console.warn('SSE connection interrupted')
-        }
-        esRef.current = es
-      },
-      [handleEvent, phase]
-  )
+  const connectSSE = useCallback((id: string) => {
+    if (esRef.current) esRef.current.close()
+    const es = new EventSource(`${API}/api/debate/${id}/stream`)
+    es.onmessage = (e) => handleEvent(e.data)
+    esRef.current = es
+  }, [handleEvent])
 
   useEffect(() => () => esRef.current?.close(), [])
 
-  // Start debate
-  const startDebate = async () => {
+  const startDebate = async (customAgents?: { name: string; description: string }[]) => {
     setError(null)
-    setRound1Texts(Array(AGENT_COUNT).fill(''))
-    setRound2Texts(Array(AGENT_COUNT).fill(''))
+    setRoundTexts([])
     setSynthesis('')
     setSuggestionsByType({})
     setInjection('')
     setTargetAgent(null)
-    round1Buffer.current = Array(AGENT_COUNT).fill('')
-    round2Buffer.current = Array(AGENT_COUNT).fill('')
+    setPositionShifts({})
+    setRoundInjections([])
+    setCurrentRound(1)
+    roundBuffers.current = new Map()
     synthBuffer.current = ''
 
     try {
       const res = await fetch(`${API}/api/debate/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: inputText, image: inputImage ?? undefined }),
+        body: JSON.stringify({ text: inputText, image: inputImage ?? undefined, customAgents }),
       })
       if (!res.ok) { setError(await res.text()); return }
-      const { debateId: id } = await res.json()
+
+      const { debateId: id, agentDefs } = await res.json()
+
+      // Update agent meta if custom agents were returned
+      if (agentDefs) {
+        setAgentMeta(agentDefs.map((a: { index: number; name: string; label: string; description: string }, i: number) => ({
+          index: a.index,
+          name: a.name,
+          label: a.label,
+          description: a.description,
+          color: AGENT_COLORS[i]?.color ?? '#888',
+          bgColor: AGENT_COLORS[i]?.bgColor ?? '#F8F8F8',
+        })))
+      }
 
       setDebateId(id)
-      setPhase('round1')
-      setStreamingR1(Array(AGENT_COUNT).fill(true))
+      setPhase('debating')
+      setStreamingAgents(Array(AGENT_COUNT).fill(true))
       connectSSE(id)
     } catch (err: any) {
       setError(err.message)
     }
   }
 
-  // Submit injection
   const submitInjection = async () => {
     if (!debateId) return
     setError(null)
-    setStreamingR2(Array(AGENT_COUNT).fill(true))
-    setPhase('round2')
+
+    const injData = { text: injection, type: injectionType, targetAgent: targetAgent ?? undefined }
+    setRoundInjections((prev) => [...prev, injData])
+    setStreamingAgents(Array(AGENT_COUNT).fill(true))
+    setCurrentRound((prev) => prev + 1)
+    setPhase('debating')
+    setSuggestionsByType({})
+    setInjection('')
+    setTargetAgent(null)
 
     try {
       const res = await fetch(`${API}/api/debate/${debateId}/inject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          injection,
-          injectionType,
-          targetAgent: targetAgent ?? undefined,
-        }),
+        body: JSON.stringify({ injection, injectionType, targetAgent: targetAgent ?? undefined }),
       })
       if (!res.ok) { setError(await res.text()); return }
     } catch (err: any) {
@@ -211,7 +237,20 @@ export default function App() {
     }
   }
 
-  // Reset to idle
+  const synthesize = async () => {
+    if (!debateId) return
+    setPhase('synthesizing')
+    try {
+      const res = await fetch(`${API}/api/debate/${debateId}/synthesize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      })
+      if (!res.ok) { setError(await res.text()); return }
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }
+
   const reset = () => {
     esRef.current?.close()
     setDebateId(null)
@@ -219,20 +258,41 @@ export default function App() {
     setInputText('')
     setInputImage(null)
     setImageFilename(null)
-    setRound1Texts(Array(AGENT_COUNT).fill(''))
-    setRound2Texts(Array(AGENT_COUNT).fill(''))
+    setRoundTexts([])
     setSynthesis('')
     setSuggestionsByType({})
     setInjection('')
     setTargetAgent(null)
+    setPositionShifts({})
+    setRoundInjections([])
+    setCurrentRound(1)
+    setAgentMeta(DEFAULT_AGENT_META)
     setError(null)
   }
 
-  const isDebating = phase === 'round1' || phase === 'round2' || phase === 'synthesizing'
+  // Build round data per agent for display
+  const getAgentRounds = (agentIndex: number): RoundData[] => {
+    return roundTexts.map((roundAgentTexts, roundIdx) => {
+      const roundNum = roundIdx + 1
+      const isCurrentRound = roundNum === currentRound
+      const isStreaming = isCurrentRound && streamingAgents[agentIndex]
+      const injectionForRound = roundInjections[roundIdx - 1] // injection that triggered this round
+      const shiftKey = `${roundNum}-${agentIndex}`
+
+      return {
+        roundNumber: roundNum,
+        text: roundAgentTexts[agentIndex] ?? '',
+        isStreaming,
+        injection: injectionForRound,
+        positionShift: roundNum > 1 ? positionShifts[shiftKey] : undefined,
+      }
+    })
+  }
+
+  const isDebating = phase === 'debating' || phase === 'synthesizing'
   const showDebateArea = phase !== 'idle'
   const showInjection = phase === 'awaiting_injection'
   const showSynthesis = phase === 'synthesizing' || phase === 'complete'
-  const hasRound2 = phase === 'round2' || phase === 'synthesizing' || phase === 'complete'
 
   return (
       <div className="app">
@@ -243,7 +303,7 @@ export default function App() {
           </span>
             {phase !== 'idle' && (
                 <span className={`phase-pill ${isDebating ? 'active' : ''}`}>
-              {PHASE_LABELS[phase]}
+              {phase === 'debating' ? `Round ${currentRound} — ${PHASE_LABELS[phase]}` : PHASE_LABELS[phase]}
             </span>
             )}
           </div>
@@ -265,9 +325,7 @@ export default function App() {
               )}
             </button>
             {phase !== 'idle' && (
-                <button className="new-debate-btn" onClick={reset}>
-                  New debate
-                </button>
+                <button className="new-debate-btn" onClick={reset}>New debate</button>
             )}
           </div>
         </header>
@@ -279,14 +337,8 @@ export default function App() {
                 value={inputText}
                 onChange={setInputText}
                 imageFilename={imageFilename}
-                onImageChange={(b64, name) => {
-                  setInputImage(b64)
-                  setImageFilename(name)
-                }}
-                onImageClear={() => {
-                  setInputImage(null)
-                  setImageFilename(null)
-                }}
+                onImageChange={(b64, name) => { setInputImage(b64); setImageFilename(name) }}
+                onImageClear={() => { setInputImage(null); setImageFilename(null) }}
                 onSubmit={startDebate}
                 disabled={isDebating}
             />
@@ -301,15 +353,11 @@ export default function App() {
               </div>
 
               <div className="debate-grid">
-                {AGENT_META.map((agent) => (
+                {agentMeta.map((agent) => (
                     <AgentPanel
                         key={agent.index}
                         agent={agent}
-                        round1Text={round1Texts[agent.index]}
-                        round2Text={round2Texts[agent.index]}
-                        isStreamingRound1={streamingR1[agent.index]}
-                        isStreamingRound2={streamingR2[agent.index]}
-                        hasRound2={hasRound2}
+                        rounds={getAgentRounds(agent.index)}
                     />
                 ))}
               </div>
@@ -324,15 +372,15 @@ export default function App() {
                       onTargetAgentChange={setTargetAgent}
                       suggestions={suggestionsByType[injectionType] ?? []}
                       onSubmit={submitInjection}
+                      onSynthesize={synthesize}
                       disabled={isDebating}
+                      agentMeta={agentMeta}
+                      roundNumber={currentRound}
                   />
               )}
 
               {showSynthesis && (
-                  <SynthesisPanel
-                      text={synthesis}
-                      isStreaming={phase === 'synthesizing'}
-                  />
+                  <SynthesisPanel text={synthesis} isStreaming={phase === 'synthesizing'} />
               )}
             </div>
         )}

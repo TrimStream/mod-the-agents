@@ -5,7 +5,6 @@ import { v4 as uuidv4 } from 'uuid'
 import OpenAI from 'openai'
 import { AGENTS, SYNTHESIS_SYSTEM_PROMPT, buildSuggestionsPrompt } from './agents.js'
 
-// Cerebras client (OpenAI-compatible)
 const cerebras = new OpenAI({
   apiKey: process.env.CEREBRAS_API_KEY!,
   baseURL: 'https://api.cerebras.ai/v1',
@@ -13,7 +12,15 @@ const cerebras = new OpenAI({
 
 const MODEL = 'gemma-4-31b'
 
-// Types
+interface AgentDefinition {
+  index: number
+  name: string
+  label: string
+  description: string
+  systemPrompt: string
+  round2Instruction: string
+}
+
 interface Round {
   number: number
   injection?: string
@@ -27,27 +34,22 @@ interface DebateSession {
   input: { text: string; image?: string }
   rounds: Round[]
   synthesis: string
-  phase: 'round1' | 'awaiting_injection' | 'round2' | 'synthesizing' | 'complete'
+  phase: 'debating' | 'awaiting_injection' | 'synthesizing' | 'complete'
   sseClients: Set<express.Response>
+  agentDefs: AgentDefinition[]
 }
 
 const sessions = new Map<string, DebateSession>()
 
-// SSE helpers
 function broadcast(sessionId: string, data: Record<string, unknown>) {
   const session = sessions.get(sessionId)
   if (!session) return
   const payload = `data: ${JSON.stringify(data)}\n\n`
   session.sseClients.forEach((client) => {
-    try {
-      client.write(payload)
-    } catch {
-      // client disconnected
-    }
+    try { client.write(payload) } catch {}
   })
 }
 
-// Message builders
 type MessageContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>
 
 function buildContent(text: string, image?: string): MessageContent {
@@ -58,54 +60,48 @@ function buildContent(text: string, image?: string): MessageContent {
   ]
 }
 
-// Core debate logic
+function buildCustomSystemPrompt(name: string, description: string): string {
+  return `You are "${name}" in a structured multi-agent debate. Your perspective: ${description}. Argue from this viewpoint as forcefully as possible. Address other agents by name when responding to their points. End with your strongest argument from this perspective.`
+}
+
+function buildCustomRound2Instruction(name: string): string {
+  return `This is a subsequent debate round. You are still "${name}". You have read all previous rounds. Address other agents by name where they are wrong. Change your position only if genuinely convinced — say why. Respond directly to the injection.`
+}
+
 async function runRound(sessionId: string, roundIndex: number) {
   const session = sessions.get(sessionId)
   if (!session) return
 
   const round = session.rounds[roundIndex]
-  const isRound2 = roundIndex === 1
+  const agentDefs = session.agentDefs
 
-  const agentPromises = AGENTS.map(async (agent) => {
+  const agentPromises = agentDefs.map(async (agentDef) => {
     try {
       const messages: OpenAI.Chat.ChatCompletionMessageParam[] = []
 
-      if (!isRound2) {
-        // Round 1: agent sees only the original input
-        messages.push({ role: 'system', content: agent.systemPrompt })
-        messages.push({
-          role: 'user',
-          content: buildContent(session.input.text, session.input.image) as any,
-        })
+      if (roundIndex === 0) {
+        messages.push({ role: 'system', content: agentDef.systemPrompt })
+        messages.push({ role: 'user', content: buildContent(session.input.text, session.input.image) as any })
       } else {
-        // Round 2: agent sees round 1 responses + injection
-        const round1 = session.rounds[0]
-        const round1Context = AGENTS.map(
-            (a) => `${a.label}:\n${round1.responses[a.index] ?? '(no response)'}`
-        ).join('\n\n')
+        let historyText = `Original topic: ${session.input.text}\n\n`
 
-        const injectionNote = round.injection
-            ? `\n\nHuman injection [${(round.injectionType ?? 'constraint').toUpperCase()}]${
-                round.targetAgent !== undefined
-                    ? ` targeting ${AGENTS[round.targetAgent]?.name}`
-                    : ''
-            }: "${round.injection}"`
-            : ''
-
-        const userText =
-            `Original topic: ${session.input.text}\n\n` +
-            `Round 1 responses from all agents:\n${round1Context}` +
-            injectionNote +
-            `\n\nNow give your Round 2 response as the ${agent.name}.`
-
-        messages.push({
-          role: 'system',
-          content: agent.systemPrompt + '\n\n' + agent.round2Instruction,
+        session.rounds.slice(0, roundIndex).forEach((r) => {
+          historyText += `ROUND ${r.number}:\n`
+          agentDefs.forEach((a) => {
+            historyText += `${a.label}:\n${r.responses[a.index] ?? '(no response)'}\n\n`
+          })
+          if (r.injection) {
+            historyText += `Human injection [${r.injectionType?.toUpperCase()}]${
+                r.targetAgent !== undefined ? ` targeting ${agentDefs[r.targetAgent]?.name}` : ''
+            }: "${r.injection}"\n\n`
+          }
+          historyText += '---\n\n'
         })
-        messages.push({
-          role: 'user',
-          content: buildContent(userText, session.input.image) as any,
-        })
+
+        historyText += `Now give your Round ${round.number} response as ${agentDef.name}. Address what has changed since the previous round. Reference specific agents by name. Respond directly to the injection.`
+
+        messages.push({ role: 'system', content: agentDef.systemPrompt + '\n\n' + agentDef.round2Instruction })
+        messages.push({ role: 'user', content: buildContent(historyText, session.input.image) as any })
       }
 
       const stream = await cerebras.chat.completions.create({
@@ -117,28 +113,15 @@ async function runRound(sessionId: string, roundIndex: number) {
       for await (const chunk of stream) {
         const token = chunk.choices[0]?.delta?.content ?? ''
         if (token) {
-          round.responses[agent.index] = (round.responses[agent.index] ?? '') + token
-          broadcast(sessionId, {
-            type: 'agent_token',
-            agentIndex: agent.index,
-            roundNumber: round.number,
-            token,
-          })
+          round.responses[agentDef.index] = (round.responses[agentDef.index] ?? '') + token
+          broadcast(sessionId, { type: 'agent_token', agentIndex: agentDef.index, roundNumber: round.number, token })
         }
       }
 
-      broadcast(sessionId, {
-        type: 'agent_done',
-        agentIndex: agent.index,
-        roundNumber: round.number,
-      })
+      broadcast(sessionId, { type: 'agent_done', agentIndex: agentDef.index, roundNumber: round.number })
     } catch (err: any) {
-      console.error(`Agent ${agent.name} error:`, err.message)
-      broadcast(sessionId, {
-        type: 'agent_error',
-        agentIndex: agent.index,
-        message: err.message,
-      })
+      console.error(`Agent ${agentDef.name} error:`, err.message)
+      broadcast(sessionId, { type: 'agent_error', agentIndex: agentDef.index, message: err.message })
     }
   })
 
@@ -146,50 +129,85 @@ async function runRound(sessionId: string, roundIndex: number) {
 
   broadcast(sessionId, { type: 'round_complete', roundNumber: round.number })
 
-  if (!isRound2) {
-    session.phase = 'awaiting_injection'
-    generateSuggestions(sessionId)
-  } else {
-    session.phase = 'synthesizing'
-    runSynthesis(sessionId)
-  }
+  session.phase = 'awaiting_injection'
+
+  if (roundIndex > 0) runPositionAnalysis(sessionId, roundIndex)
+  generateSuggestions(sessionId)
+}
+
+async function runPositionAnalysis(sessionId: string, roundIndex: number) {
+  const session = sessions.get(sessionId)
+  if (!session || roundIndex < 1) return
+
+  const prevRound = session.rounds[roundIndex - 1]
+  const currentRound = session.rounds[roundIndex]
+
+  await Promise.allSettled(
+      session.agentDefs.map(async (agentDef) => {
+        const prev = prevRound.responses[agentDef.index] ?? ''
+        const current = currentRound.responses[agentDef.index] ?? ''
+        if (!prev || !current) return
+
+        try {
+          const response = await cerebras.chat.completions.create({
+            model: MODEL,
+            messages: [{
+              role: 'user',
+              content: `Analyze whether this debate agent changed their position between rounds.
+
+Agent: ${agentDef.name}
+Round ${prevRound.number} (first 350 chars): "${prev.slice(0, 350)}"
+Round ${currentRound.number} (first 350 chars): "${current.slice(0, 350)}"
+
+Did this agent meaningfully shift, soften, or reverse their core argument?
+Reply with ONLY one of these exact formats:
+SHIFTED: [one short sentence describing the change]
+HOLDING: [one short sentence confirming they held their position]`,
+            }],
+            max_tokens: 80,
+          })
+
+          const raw = response.choices[0]?.message?.content?.trim() ?? ''
+          const shifted = raw.startsWith('SHIFTED')
+          const summary = raw.replace(/^(SHIFTED|HOLDING):\s*/, '').trim()
+
+          broadcast(sessionId, {
+            type: 'position_analysis',
+            agentIndex: agentDef.index,
+            roundNumber: currentRound.number,
+            shifted,
+            summary,
+          })
+        } catch {
+          // Non-critical — silently skip
+        }
+      })
+  )
 }
 
 async function generateSuggestions(sessionId: string) {
   const session = sessions.get(sessionId)
   if (!session) return
 
-  const round1 = session.rounds[0]
-  const context = AGENTS.map(
-      (a) => `${a.label}: ${round1.responses[a.index] ?? ''}`
-  ).join('\n\n')
+  const latestRound = session.rounds[session.rounds.length - 1]
+  const context = session.agentDefs
+      .map((a) => `${a.label}: ${latestRound.responses[a.index] ?? ''}`)
+      .join('\n\n')
 
   const INJECTION_TYPES = ['constraint', 'evidence', 'flip'] as const
 
   const fallbacks: Record<string, string[]> = {
-    constraint: [
-      'Assume a hard salary cap of $50M total',
-      'All players must retire at age 30',
-      'Only one player per position can score above 20 PPG',
-    ],
-    evidence: [
-      'New analytics rank playmaking 3x more valuable than scoring',
-      'Historical data shows era-adjusted stats favor pre-1980 players by 40%',
-      'A new study confirms prime players lose 15% efficiency in unfamiliar systems',
-    ],
-    flip: [
-      `The Pragmatist must now argue against their current position`,
-      `The Skeptic must now defend the consensus pick`,
-      `The Devil's Advocate must now support the most popular argument`,
-    ],
+    constraint: ['Assume a hard budget cap of $50M total', 'All decisions must be made in under 24 hours', 'No external expertise or consultants allowed'],
+    evidence: ['New data shows the opposite has been true for the past decade', 'A major industry player just proved this wrong publicly', 'Independent research contradicts the most popular position here'],
+    flip: ["The Pragmatist must now argue the opposite position", "The Skeptic must defend the most optimistic view", "The Devil's Advocate must now support the consensus"],
   }
 
-  // Run all three type calls in parallel
   const results = await Promise.allSettled(
       INJECTION_TYPES.map(async (injType) => {
         const response = await cerebras.chat.completions.create({
           model: MODEL,
           messages: [{ role: 'user', content: buildSuggestionsPrompt(context, injType) }],
+          max_tokens: 200,
         })
         const raw = response.choices[0]?.message?.content ?? '[]'
         const cleaned = raw.replace(/```json|```/g, '').trim()
@@ -198,7 +216,6 @@ async function generateSuggestions(sessionId: string) {
   )
 
   const suggestionsByType: Record<string, string[]> = { ...fallbacks }
-
   for (const result of results) {
     if (result.status === 'fulfilled') {
       suggestionsByType[result.value.injType] = result.value.suggestions
@@ -212,20 +229,20 @@ async function runSynthesis(sessionId: string) {
   const session = sessions.get(sessionId)
   if (!session) return
 
-  const round1 = session.rounds[0]
-  const round2 = session.rounds[1]
+  let context = `Topic: ${session.input.text}\n\n`
 
-  let context = `Topic: ${session.input.text}\n\nROUND 1:\n`
-  context += AGENTS.map((a) => `${a.label}:\n${round1.responses[a.index] ?? ''}`).join('\n\n')
-
-  if (round2) {
-    context += `\n\nHuman Injection [${(round2.injectionType ?? 'constraint').toUpperCase()}]`
-    if (round2.targetAgent !== undefined) {
-      context += ` (targeting ${AGENTS[round2.targetAgent]?.name})`
+  session.rounds.forEach((r) => {
+    context += `ROUND ${r.number}:\n`
+    session.agentDefs.forEach((a) => {
+      context += `${a.label}:\n${r.responses[a.index] ?? ''}\n\n`
+    })
+    if (r.injection) {
+      context += `Human Injection [${r.injectionType?.toUpperCase()}]${
+          r.targetAgent !== undefined ? ` (targeting ${session.agentDefs[r.targetAgent]?.name})` : ''
+      }: "${r.injection}"\n\n`
     }
-    context += `: "${round2.injection}"\n\nROUND 2:\n`
-    context += AGENTS.map((a) => `${a.label}:\n${round2.responses[a.index] ?? ''}`).join('\n\n')
-  }
+    context += '---\n\n'
+  })
 
   try {
     const stream = await cerebras.chat.completions.create({
@@ -252,17 +269,13 @@ async function runSynthesis(sessionId: string) {
   }
 }
 
-// Express app
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '15mb' }))
 
 app.get('/api/debate/:id/stream', (req, res) => {
   const session = sessions.get(req.params.id)
-  if (!session) {
-    res.status(404).json({ error: 'Session not found' })
-    return
-  }
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return }
 
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -275,11 +288,31 @@ app.get('/api/debate/:id/stream', (req, res) => {
 })
 
 app.post('/api/debate/start', async (req, res) => {
-  const { text, image } = req.body as { text: string; image?: string }
-  if (!text?.trim()) {
-    res.status(400).json({ error: 'text is required' })
-    return
+  const { text, image, customAgents } = req.body as {
+    text: string
+    image?: string
+    customAgents?: { name: string; description: string }[]
   }
+
+  if (!text?.trim()) { res.status(400).json({ error: 'text is required' }); return }
+
+  const agentDefs: AgentDefinition[] = customAgents?.length === 4
+      ? customAgents.map((ca, i) => ({
+        index: i,
+        name: ca.name,
+        label: ca.name.toUpperCase(),
+        description: ca.description,
+        systemPrompt: buildCustomSystemPrompt(ca.name, ca.description),
+        round2Instruction: buildCustomRound2Instruction(ca.name),
+      }))
+      : AGENTS.map((a) => ({
+        index: a.index,
+        name: a.name,
+        label: a.label,
+        description: '',
+        systemPrompt: a.systemPrompt,
+        round2Instruction: a.round2Instruction,
+      }))
 
   const id = uuidv4()
   const session: DebateSession = {
@@ -287,21 +320,23 @@ app.post('/api/debate/start', async (req, res) => {
     input: { text: text.trim(), image },
     rounds: [{ number: 1, responses: {} }],
     synthesis: '',
-    phase: 'round1',
+    phase: 'debating',
     sseClients: new Set(),
+    agentDefs,
   }
 
   sessions.set(id, session)
-  res.json({ debateId: id })
+  res.json({
+    debateId: id,
+    agentDefs: agentDefs.map((a) => ({ index: a.index, name: a.name, label: a.label, description: a.description })),
+  })
+
   runRound(id, 0)
 })
 
 app.post('/api/debate/:id/inject', (req, res) => {
   const session = sessions.get(req.params.id)
-  if (!session) {
-    res.status(404).json({ error: 'Session not found' })
-    return
-  }
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return }
 
   const { injection, injectionType, targetAgent } = req.body as {
     injection: string
@@ -309,32 +344,36 @@ app.post('/api/debate/:id/inject', (req, res) => {
     targetAgent?: number
   }
 
-  if (!injection?.trim()) {
-    res.status(400).json({ error: 'injection text is required' })
-    return
-  }
+  if (!injection?.trim()) { res.status(400).json({ error: 'injection text is required' }); return }
 
-  const round2: Round = {
-    number: 2,
+  const nextRoundNumber = session.rounds.length + 1
+  const newRound: Round = {
+    number: nextRoundNumber,
     injection: injection.trim(),
     injectionType,
     targetAgent,
     responses: {},
   }
 
-  session.rounds.push(round2)
-  session.phase = 'round2'
+  session.rounds.push(newRound)
+  session.phase = 'debating'
 
+  res.json({ success: true, roundNumber: nextRoundNumber })
+  runRound(session.id, session.rounds.length - 1)
+})
+
+app.post('/api/debate/:id/synthesize', (req, res) => {
+  const session = sessions.get(req.params.id)
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return }
+
+  session.phase = 'synthesizing'
   res.json({ success: true })
-  runRound(session.id, 1)
+  runSynthesis(session.id)
 })
 
 app.get('/api/debate/:id', (req, res) => {
   const session = sessions.get(req.params.id)
-  if (!session) {
-    res.status(404).json({ error: 'Session not found' })
-    return
-  }
+  if (!session) { res.status(404).json({ error: 'Session not found' }); return }
 
   res.json({
     id: session.id,
