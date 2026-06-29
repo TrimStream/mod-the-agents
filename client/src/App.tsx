@@ -56,7 +56,7 @@ export default function App() {
   const [injection, setInjection] = useState('')
   const [injectionType, setInjectionType] = useState<InjectionType>('constraint')
   const [targetAgent, setTargetAgent] = useState<number | null>(null)
-  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [suggestionsByType, setSuggestionsByType] = useState<Record<string, string[]>>({})
 
   // SSE ref
   const esRef = useRef<EventSource | null>(null)
@@ -120,7 +120,7 @@ export default function App() {
       }
 
       case 'suggestions':
-        setSuggestions(data.suggestions as string[])
+        setSuggestionsByType(data.suggestionsByType as Record<string, string[]>)
         setPhase('awaiting_injection')
         break
 
@@ -163,7 +163,7 @@ export default function App() {
     setRound1Texts(Array(AGENT_COUNT).fill(''))
     setRound2Texts(Array(AGENT_COUNT).fill(''))
     setSynthesis('')
-    setSuggestions([])
+    setSuggestionsByType({})
     setInjection('')
     setTargetAgent(null)
     round1Buffer.current = Array(AGENT_COUNT).fill('')
@@ -176,7 +176,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: inputText, image: inputImage ?? undefined }),
       })
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) { setError(await res.text()); return }
       const { debateId: id } = await res.json()
 
       setDebateId(id)
@@ -205,7 +205,7 @@ export default function App() {
           targetAgent: targetAgent ?? undefined,
         }),
       })
-      if (!res.ok) throw new Error(await res.text())
+      if (!res.ok) { setError(await res.text()); return }
     } catch (err: any) {
       setError(err.message)
     }
@@ -222,7 +222,7 @@ export default function App() {
     setRound1Texts(Array(AGENT_COUNT).fill(''))
     setRound2Texts(Array(AGENT_COUNT).fill(''))
     setSynthesis('')
-    setSuggestions([])
+    setSuggestionsByType({})
     setInjection('')
     setTargetAgent(null)
     setError(null)
@@ -322,7 +322,7 @@ export default function App() {
                       onTypeChange={setInjectionType}
                       targetAgent={targetAgent}
                       onTargetAgentChange={setTargetAgent}
-                      suggestions={suggestions}
+                      suggestions={suggestionsByType[injectionType] ?? []}
                       onSubmit={submitInjection}
                       disabled={isDebating}
                   />

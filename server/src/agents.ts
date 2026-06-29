@@ -58,12 +58,20 @@ INJECTION IMPACT
 VERDICT
 [A single bottom-line recommendation or insight. No hedging. Pick a side if the debate demands it.]`
 
-export const buildSuggestionsPrompt = (debateContext: string): string =>
+const SUGGESTION_TYPE_INSTRUCTIONS = {
+  constraint: `Generate exactly 3 constraint-type injections — short, concrete rules or limitations that would change the terms of the debate. Focus on systemic constraints (e.g. "Assume players can only play 24 minutes per game", "The draft is limited to players under 25", "No salary cap exists").`,
+  evidence: `Generate exactly 3 evidence-type injections — new facts, statistics, or information that agents must now account for. Make them specific and debate-shifting (e.g. "New analytics show playmaking is 3x more valuable than scoring", "Historical data confirms Wilt averaged 50 PPG against elite competition only").`,
+  flip: `Generate exactly 3 flip-type injections that instruct a specific named agent to argue the opposite of their current position. Name the agent explicitly (e.g. "The Pragmatist must now argue for Stephen Curry over LeBron", "The Skeptic must defend LeBron as the undisputed #1 pick", "The Devil's Advocate must now support the consensus position").`,
+}
+
+export const buildSuggestionsPrompt = (
+    debateContext: string,
+    type: 'constraint' | 'evidence' | 'flip'
+): string =>
     `The following debate just completed its first round between four agents (Pragmatist, Skeptic, Optimist, Devil's Advocate):
 
 ${debateContext}
 
-Generate exactly 3 injection suggestions that would most interestingly destabilize or reframe this debate. Mix at least one constraint, one piece of new evidence, and one perspective-flip targeting a specific agent.
+${SUGGESTION_TYPE_INSTRUCTIONS[type]}
 
-Return ONLY a valid JSON array of 3 strings. No preamble, no markdown, no explanation.
-Example: ["Assume the timeline is 48 hours", "A key stakeholder just pulled funding", "The Skeptic must now argue the opposite position"]`
+Return ONLY a valid JSON array of 3 strings. No preamble, no markdown, no explanation.`

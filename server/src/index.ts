@@ -164,26 +164,48 @@ async function generateSuggestions(sessionId: string) {
       (a) => `${a.label}: ${round1.responses[a.index] ?? ''}`
   ).join('\n\n')
 
-  try {
-    const response = await cerebras.chat.completions.create({
-      model: MODEL,
-      messages: [{ role: 'user', content: buildSuggestionsPrompt(context) }],
-    })
+  const INJECTION_TYPES = ['constraint', 'evidence', 'flip'] as const
 
-    const raw = response.choices[0]?.message?.content ?? '[]'
-    const cleaned = raw.replace(/```json|```/g, '').trim()
-    const suggestions = JSON.parse(cleaned)
-    broadcast(sessionId, { type: 'suggestions', suggestions })
-  } catch {
-    broadcast(sessionId, {
-      type: 'suggestions',
-      suggestions: [
-        'Assume the budget is $0',
-        'The deadline moved to 48 hours from now',
-        'A competitor just shipped a similar product',
-      ],
-    })
+  const fallbacks: Record<string, string[]> = {
+    constraint: [
+      'Assume a hard salary cap of $50M total',
+      'All players must retire at age 30',
+      'Only one player per position can score above 20 PPG',
+    ],
+    evidence: [
+      'New analytics rank playmaking 3x more valuable than scoring',
+      'Historical data shows era-adjusted stats favor pre-1980 players by 40%',
+      'A new study confirms prime players lose 15% efficiency in unfamiliar systems',
+    ],
+    flip: [
+      `The Pragmatist must now argue against their current position`,
+      `The Skeptic must now defend the consensus pick`,
+      `The Devil's Advocate must now support the most popular argument`,
+    ],
   }
+
+  // Run all three type calls in parallel
+  const results = await Promise.allSettled(
+      INJECTION_TYPES.map(async (injType) => {
+        const response = await cerebras.chat.completions.create({
+          model: MODEL,
+          messages: [{ role: 'user', content: buildSuggestionsPrompt(context, injType) }],
+        })
+        const raw = response.choices[0]?.message?.content ?? '[]'
+        const cleaned = raw.replace(/```json|```/g, '').trim()
+        return { injType, suggestions: JSON.parse(cleaned) as string[] }
+      })
+  )
+
+  const suggestionsByType: Record<string, string[]> = { ...fallbacks }
+
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      suggestionsByType[result.value.injType] = result.value.suggestions
+    }
+  }
+
+  broadcast(sessionId, { type: 'suggestions', suggestionsByType })
 }
 
 async function runSynthesis(sessionId: string) {
